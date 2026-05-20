@@ -1,0 +1,21 @@
+# End-effector pose stream — geometry_msgs/Pose, expressed in the arm
+# base frame. Forward-kinematics output from the upstream driver,
+# updated at the same cadence as joint_states.
+#
+# Source topic: `/<arm_namespace>/end_pose` (see
+# piper_ctrl_single_node.py:46 / 207).
+#
+# Why it's exposed as a separate contract instead of having consumers
+# do their own FK from joint_states + URDF: the upstream driver
+# already computes it on the chassis-side and publishes it as a
+# `geometry_msgs/Pose`. Re-using it keeps consumers from having to
+# vendor URDF + KDL just to know where the gripper is right now;
+# Stage 6 pick_skill_rbnx and any teleop tool benefits.
+[contract]
+id      = "robonix/primitive/arm/end_pose"
+version = "1"
+kind    = "primitive"
+idl     = "common_interfaces/geometry_msgs/msg/Pose.msg"
+
+[mode]
+type = "topic_out"

@@ -1,0 +1,24 @@
+# Cartesian end-effector position command sink — vendor-specific
+# PosCmd (x/y/z + roll/pitch/yaw + gripper + mode1/mode2). The piper
+# driver SUBSCRIBES to this topic; consumers (Stage 5
+# piper_moveit_rbnx, the legacy graspnet_to_poscmd_node, …) PUBLISH
+# to it.
+#
+# Source topic: `/<arm_namespace>/pos_cmd` (see
+# piper_ctrl_single_node.py:68).
+#
+# Note the `topic_in` mode: from atlas's POV this primitive is a
+# CONSUMER endpoint; downstream services discovering this contract
+# learn "where to publish to make the arm move". This mirrors the
+# chassis/twist_in pattern in ranger_chassis_rbnx.
+#
+# IDL `piper_msgs/msg/PosCmd.msg` is shipped at package level next
+# to PiperStatusMsg.
+[contract]
+id      = "robonix/primitive/arm/pos_cmd"
+version = "1"
+kind    = "primitive"
+idl     = "piper_msgs/msg/PosCmd.msg"
+
+[mode]
+type = "topic_in"

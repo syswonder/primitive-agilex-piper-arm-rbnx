@@ -1,0 +1,25 @@
+# Piper arm status stream — vendor-specific PiperStatusMsg. Tells the
+# consumer whether the arm is busy / idle / faulted, which joints are
+# at angle limits, and whether the per-joint CAN comm is healthy.
+#
+# Source topic: `/<arm_namespace>/arm_status` (driver-defined, see
+# piper_ctrl_single_node.py:45).
+#
+# Consumed by:
+#   - Stage 6 pick_skill_rbnx: pick.py's retry loop polls
+#     `arm_status.arm_status == 0` to know the arm is back to a
+#     ready state after a previous command finished.
+#   - Stage 5 piper_moveit_rbnx: gates execute_grasp on busy/idle.
+#
+# The IDL `piper_msgs/msg/PiperStatusMsg.msg` is shipped at PACKAGE
+# level under `capabilities/lib/piper_msgs/msg/PiperStatusMsg.msg`
+# because it's vendor-specific and has no place in the global
+# common_interfaces tree.
+[contract]
+id      = "robonix/primitive/arm/arm_status"
+version = "1"
+kind    = "primitive"
+idl     = "piper_msgs/msg/PiperStatusMsg.msg"
+
+[mode]
+type = "topic_out"
