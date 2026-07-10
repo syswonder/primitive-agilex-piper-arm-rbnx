@@ -123,13 +123,19 @@ def _can_activate(cfg: dict) -> Optional[str]:
     except FileNotFoundError as e:
         return f"can_activate.sh: spawn failed: {e}"
     except subprocess.TimeoutExpired:
-        return "can_activate.sh: timed out after 15s (sudo prompt blocked?)"
+        return (
+            "can_activate.sh: timed out after 15s (sudo prompt blocked?). "
+            "For manual diagnosis run "
+            "`bash scripts/find_all_can_port.sh` in piper_ctl_rbnx."
+        )
     if out.returncode != 0:
         # The script's own stderr is the most useful diagnostic.
         tail = (out.stderr or out.stdout or "").strip().splitlines()[-5:]
         return (
             f"can_activate.sh: exit {out.returncode}; tail: "
             + " | ".join(tail)
+            + "; run `bash scripts/find_all_can_port.sh` to inspect "
+            "the current CAN interface/USB-port mapping."
         )
     return None
 

@@ -66,6 +66,18 @@ must be `up` and named `can_piper` (or whatever you set
 `can_port:` to) before `piper_ctrl_single_node` can talk to it.
 There are two ways to make that happen:
 
+If the configured USB address or interface name looks wrong, inspect
+the current host mapping first:
+
+```bash
+bash scripts/find_all_can_port.sh
+```
+
+Use the reported USB bus path, for example `1-4.2:1.0`, as
+`can_usb_address`. Do not guess when multiple CAN interfaces are
+present; Jetson onboard `*.mttcan` interfaces and USB-CAN adapters can
+coexist.
+
 ### Path A — recommended for production (default)
 
 Bring `can_piper` up **outside `rbnx boot`**, ahead of time. On a
@@ -128,6 +140,7 @@ piper_ctl_rbnx/
 ├── scripts/
 │   ├── build.sh                             # colcon + rbnx codegen
 │   ├── start.sh                             # source ROS, exec main
+│   ├── find_all_can_port.sh                 # print CAN interface ↔ USB bus mapping
 │   └── can_activate.sh                      # vendored from upstream piper_ros
 └── src/                                     # vendored (no .git, no build/install)
     ├── piper/                               # main ROS 2 driver (rclpy)

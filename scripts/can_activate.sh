@@ -27,6 +27,16 @@ fi
 
 echo "Both ethtool and can-utils are installed."
 
+SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+FIND_SCRIPT="$SCRIPT_DIR/find_all_can_port.sh"
+
+print_can_hint() {
+    echo "Hint: inspect the current CAN/USB mapping with:"
+    echo "  bash \"$FIND_SCRIPT\""
+    echo "Then set can_usb_address in robonix_manifest.yaml, or run:"
+    echo "  bash \"$0\" \"$DEFAULT_CAN_NAME\" \"$DEFAULT_BITRATE\" <usb_addr>"
+}
+
 # Retrieve the number of CAN modules in the current system.
 CURRENT_CAN_COUNT=$(ip link show type can | grep -c "link/can")
 
@@ -47,7 +57,8 @@ if [ "$CURRENT_CAN_COUNT" -ne "1" ]; then
         done
         echo -e " Error: The number of CAN modules detected by the system ($CURRENT_CAN_COUNT) does not match the expected number (1). "
         echo -e " Please add the USB hardware address parameter, such as: "
-        echo -e " bash can_activate.sh can0 1000000 1-2:1.0"
+        echo -e " bash can_activate.sh $DEFAULT_CAN_NAME $DEFAULT_BITRATE 1-2:1.0"
+        print_can_hint
         echo "-------------------ERROR-----------------------"
         exit 1
     fi
@@ -75,6 +86,7 @@ if [ -n "$USB_ADDRESS" ]; then
     
     if [ -z "$INTERFACE_NAME" ]; then
         echo "Error: Unable to find CAN interface corresponding to USB hardware address $USB_ADDRESS."
+        print_can_hint
         exit 1
     else
         echo "Found the interface corresponding to USB hardware address $USB_ADDRESS: $INTERFACE_NAME."
@@ -86,6 +98,7 @@ else
     # Check if the interface name has been retrieved.
     if [ -z "$INTERFACE_NAME" ]; then
         echo "Error: Unable to detect CAN interface."
+        print_can_hint
         exit 1
     fi
     BUS_INFO=$(sudo ethtool -i "$INTERFACE_NAME" | grep "bus-info" | awk '{print $2}')
