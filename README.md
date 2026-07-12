@@ -1,79 +1,59 @@
-# piper_ctl_rbnx
+# primitive-agilex-piper-arm-rbnx
 
-Robonix package wrapping the **AgileX Piper 6-DoF arm** hardware
-driver. Owns the `primitive/arm/*` namespace for the `piper_grasp`
-deploy.
+Robonix package wrapping the **AgileX Piper 6-DoF arm** hardware driver. Owns the `primitive/arm/*` namespace.
 
-> Naming note: this package is `piper_ctl_rbnx` (not `piper_chassis_rbnx`)
-> — Piper is an arm, "chassis" would mislead. `_ctl` = low-level
-> control, the contract namespace is `arm`. See MIGRATION_PLAN.md
-> §2.0 for context.
+Catalog name: `robonix.primitive.agilex.piper.arm`.
 
-## Boot ordering
-
-This is the **arm primitive** for the piper_grasp deploy. Boot it
-**before** any consumer of `primitive/arm/*` — Stage 3A
-`piper_description_rbnx` consumes `arm/joint_states` to drive
-`robot_state_publisher`; Stage 5 `piper_moveit_rbnx` consumes
-`arm/arm_status` and publishes to `arm/pos_cmd`; Stage 6
-`pick_skill_rbnx` polls `arm/arm_status` between grasps. rbnx-cli
-has no defer/retry so providers MUST come first in YAML
-declaration order.
+> Naming note: internal directory / binary name is `piper_ctl` (`_ctl` = low-level control), while the contract namespace is `arm`. Piper is an arm, so calling this `piper_chassis_rbnx` would mislead.
 
 ## Capability surface
 
-| Contract                                | Mode      | Transport | Source / handler                                    |
-| --------------------------------------- | --------- | --------- | --------------------------------------------------- |
-| `robonix/primitive/arm/driver`          | rpc       | gRPC      | `Driver(CMD_INIT, config_json)` — lifecycle gate    |
-| `robonix/primitive/arm/joint_states`    | topic_out | ROS 2     | `/<ns>/joint_states_single` (sensor_msgs/JointState) |
-| `robonix/primitive/arm/arm_status`      | topic_out | ROS 2     | `/<ns>/arm_status` (piper_msgs/PiperStatusMsg)      |
-| `robonix/primitive/arm/end_pose`        | topic_out | ROS 2     | `/<ns>/end_pose` (geometry_msgs/Pose)               |
-| `robonix/primitive/arm/pos_cmd`         | topic_in  | ROS 2     | `/<ns>/pos_cmd` (piper_msgs/PosCmd) — driver subscribes; consumers publish |
+| Contract                                | Mode       | Transport | Source / handler                                     |
+| --------------------------------------- | ---------- | --------- | ---------------------------------------------------- |
+| `robonix/primitive/arm/driver`          | rpc        | gRPC      | `Driver(CMD_INIT, config_json)` — lifecycle gate     |
+| `robonix/primitive/arm/joint_states`    | topic_out  | ROS 2     | `/<ns>/joint_states_single` (sensor_msgs/JointState) |
+| `robonix/primitive/arm/arm_status`      | topic_out  | ROS 2     | `/<ns>/arm_status` (piper_msgs/PiperStatusMsg)       |
+| `robonix/primitive/arm/end_pose`        | topic_out  | ROS 2     | `/<ns>/end_pose` (geometry_msgs/Pose)                |
+| `robonix/primitive/arm/pos_cmd`         | topic_in   | ROS 2     | `/<ns>/pos_cmd` (piper_msgs/PosCmd) — driver subscribes; consumers publish |
 
-All five contracts are **package-locally defined** (see
-`capabilities/primitive/arm/*.v1.toml`) because the robonix global
-tree doesn't ship `primitive/arm/*` yet (it has chassis / camera /
-lidar / imu / audio). codegen + atlas merge package-level contracts
-automatically. The two vendor-specific message types
-(`PiperStatusMsg`, `PosCmd`) are also shipped at package level, at
-`capabilities/lib/piper_msgs/msg/*.msg`.
+All five contracts are **package-locally defined** (see `capabilities/primitive/arm/*.v1.toml`) because the robonix global tree does not ship `primitive/arm/*` yet (it has chassis / camera / lidar / imu / audio). The two vendor-specific message types (`PiperStatusMsg`, `PosCmd`) are also shipped at package level, at `capabilities/lib/piper_msgs/msg/*.msg`.
 
-> **single-source-of-truth** for the two `.msg` IDLs is the vendored
-> `src/piper_msgs/msg/` directory. The mirrored copies under
-> `capabilities/lib/piper_msgs/msg/` are what `rbnx codegen` /
-> atlas's contract registry actually scan. Keep them in sync — if
-> upstream piper_msgs ever changes, update both. (We use plain
-> file copies rather than symlinks to keep `git diff` legible.)
+> **Single-source-of-truth** for the two `.msg` IDLs is the vendored `src/piper_msgs/msg/` directory. The mirrored copies under `capabilities/lib/piper_msgs/msg/` are what `rbnx codegen` / atlas's contract registry actually scan. Keep them in sync — if upstream `piper_msgs` ever changes, update both. Plain file copies are used rather than symlinks to keep `git diff` legible.
+
+## Boot ordering
+
+Boot this **before** any consumer of `primitive/arm/*`. In the vertical-grasp pipeline:
+
+- `primitive-agilex-piper-description-rbnx` consumes `arm/joint_states` to drive `robot_state_publisher`;
+- `service-piper-moveit-rbnx` consumes `arm/arm_status` and publishes to `arm/pos_cmd`;
+- `skill-pick-rbnx` polls `arm/arm_status` between grasps.
+
+rbnx-cli has no defer/retry, so providers MUST come first in YAML declaration order.
 
 ## Driver-init lifecycle
 
-`start.sh` brings up the atlas bridge (Python). The bridge registers
-the provider, declares only `primitive/arm/driver` (auto-emitted by
-the framework when codegen produces a `Driver` Servicer), then blocks
-on `Driver(CMD_INIT, config_json)`.
+`start.sh` brings up the atlas bridge — no ROS spawn. The bridge opens a gRPC server, registers the provider, declares only `primitive/arm/driver` (auto-emitted by the framework when codegen produces a `Driver` Servicer), then blocks on `Driver(CMD_INIT, config_json)`.
 
-When `rbnx boot` invokes Init it passes the manifest's `config:`
-block as JSON. The handler validates cfg, optionally runs
-`scripts/can_activate.sh` (when `auto_can_setup=true`), spawns
-`ros2 launch piper start_single_piper.launch.py …`, waits for the
-first `JointState` on `joint_states_single` as proof the CAN link
-came up, declares the four ROS 2 topics on atlas, and returns ok.
+When `rbnx boot` invokes Init it passes the manifest's `config:` block as JSON. The handler:
+
+1. validates cfg (CAN port, bitrate, gripper flags, sentinel timeout);
+2. optionally runs `scripts/can_activate.sh` (when `auto_can_setup=true`);
+3. spawns `ros2 launch piper start_single_piper.launch.py …`;
+4. waits for the first `sensor_msgs/JointState` on `/<ns>/joint_states_single` as proof the CAN link came up;
+5. declares `arm/joint_states`, `arm/arm_status`, `arm/end_pose`, `arm/pos_cmd` on atlas, and returns ok.
+
+`CMD_DEACTIVATE` / `CMD_SHUTDOWN` kill the piper subprocess. Idempotent.
 
 ## CAN bring-up — TWO paths
 
-The Piper arm uses USB-CAN (MCP251xFD or similar). The CAN interface
-must be `up` and named `can_piper` (or whatever you set
-`can_port:` to) before `piper_ctrl_single_node` can talk to it.
-There are two ways to make that happen:
+The Piper arm uses USB-CAN (MCP251xFD or similar). The CAN interface must be **up** and named `can_piper` (or whatever you set `can_port:` to) before `piper_ctrl_single_node` can talk to it. The CAN interface name is config-driven — the package never hardcodes a device name.
 
 ### Path A — recommended for production (default)
 
-Bring `can_piper` up **outside `rbnx boot`**, ahead of time. On a
-Jetson with udev rules, this is once-per-boot:
+Bring `can_piper` up **outside `rbnx boot`**, ahead of time. On a Jetson with udev rules, this is once-per-boot:
 
 ```bash
 # Run once per host boot, BEFORE `rbnx boot`:
-cd /Users/howenliu/lab/packages/piper_ctl_rbnx
 bash scripts/can_activate.sh can_piper 1000000 "1-4.2:1.0"
 # Replace "1-4.2:1.0" with the USB bus path of your Piper.
 # To list candidates:
@@ -81,36 +61,28 @@ bash scripts/can_activate.sh can_piper 1000000 "1-4.2:1.0"
 #   sudo ethtool -i can0 | grep bus-info
 ```
 
-`auto_can_setup` stays `false` in the manifest. This path keeps the
-deploy free of sudo coupling — the operator approves the sudo prompt
-once, interactively, then `rbnx boot` runs unattended.
+`auto_can_setup` stays `false` in the manifest. This path keeps the deploy free of sudo coupling — the operator approves the sudo prompt once, interactively, then `rbnx boot` runs unattended.
 
 ### Path B — convenience for dev laptops
 
-Set `auto_can_setup: true` in the manifest config block. `on_activate`
-will run `scripts/can_activate.sh` itself before spawning the
-driver. Requires **passwordless sudo** for the operator (otherwise
-the script blocks on the prompt and `Driver(CMD_INIT)` times out).
+Set `auto_can_setup: true` in the manifest config block. `on_activate` will run `scripts/can_activate.sh` itself before spawning the driver. Requires **passwordless sudo** for the operator (otherwise the script blocks on the prompt and `Driver(CMD_INIT)` times out).
 
 ```yaml
 - name: piper_ctl
   path: ../packages/piper_ctl_rbnx
   config:
-    can_port: can_piper
-    can_bitrate: 1000000
+    can_port:        can_piper
+    can_bitrate:     1000000
     can_usb_address: "1-4.2:1.0"
-    auto_can_setup: true
-    # ...
+    auto_can_setup:  true
 ```
 
-Path B is more convenient when the USB-CAN's bus path shifts between
-sessions, but couples the deploy to sudoers state — not ideal for
-production.
+Path B is more convenient when the USB-CAN's bus path shifts between sessions, but couples the deploy to sudoers state — not ideal for production.
 
 ## Layout
 
 ```
-piper_ctl_rbnx/
+primitive-agilex-piper-arm-rbnx/
 ├── package_manifest.yaml
 ├── capabilities/
 │   ├── primitive/arm/
@@ -162,14 +134,9 @@ ROBONIX_ATLAS=127.0.0.1:50051 \
     bash scripts/start.sh                              # registers, awaits Init
 ```
 
-To drive Init manually (without `rbnx boot`): from any robonix gRPC
-client, call the arm's `Driver` service with `command=0` (CMD_INIT)
-and a JSON config blob. The handler returns `ok=true` after the
-first JointState is observed, then declares the four data topics.
+To drive Init manually (without `rbnx boot`): from any robonix gRPC client, call the arm's `Driver` service with `command=0` (CMD_INIT) and a JSON config blob. The handler returns `ok=true` after the first JointState is observed, then declares the four data topics.
 
-## Verification (Stage 2 deliverable)
-
-After `rbnx boot` from `piper_grasp_deploy/`:
+## Verification
 
 ```bash
 rbnx caps | grep arm
@@ -188,26 +155,14 @@ ros2 topic pub --once /arm/pos_cmd piper_msgs/msg/PosCmd \
 
 ## Vendor / upstream
 
-`src/piper/`, `src/piper_msgs/`, `src/graspnet_msgs/` are verbatim
-copies from
-[agilexrobotics/piper_ros](https://github.com/agilexrobotics/piper_ros)
-at the version that worked on the original Jetson with
-`/Users/howenliu/lab/grasp/driver/piper_ros/`. The other packages
-in the upstream workspace (`piper_humble`, `piper_with_gripper_moveit`,
-`piper_moveit_control`, `piper_description`, `piper_gazebo`,
-`piper_mujoco`, `piper_no_gripper_moveit`, `piper_sim`) are
-deliberately **not** vendored here:
+`src/piper/`, `src/piper_msgs/`, `src/graspnet_msgs/` are verbatim copies from [agilexrobotics/piper_ros](https://github.com/agilexrobotics/piper_ros). The other packages in the upstream workspace are deliberately **not** vendored here and land in their own robonix packages:
 
-- `piper_description` / `piper_with_gripper_moveit` → Stage 3A
-  `piper_description_rbnx` (URDF + robot_state_publisher).
-- `piper_humble` / `piper_moveit_control` → Stage 5
-  `piper_moveit_rbnx`.
-- `piper_gazebo` / `piper_mujoco` / `piper_sim` → not migrated
-  (sim-only; original deploy doesn't use them).
+- `piper_description` / `piper_with_gripper_moveit` → `primitive-agilex-piper-description-rbnx`.
+- `piper_humble` / `piper_moveit_control` → `service-piper-moveit-rbnx`.
+- `piper_gazebo` / `piper_mujoco` / `piper_sim` → not migrated (sim-only).
 
-If anything diverges from upstream, drop a `*.patch` alongside
-`src/` documenting the diff.
+If anything diverges from upstream, drop a `*.patch` alongside `src/` documenting the diff.
 
 ## License
 
-This package: Apache-2.0 (matches piper_ros upstream).
+This package: Apache-2.0. Vendored piper_ros / piper_msgs / graspnet_msgs: see their respective LICENSE files.
