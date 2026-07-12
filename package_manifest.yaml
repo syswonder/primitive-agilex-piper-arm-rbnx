@@ -66,6 +66,8 @@ package:
   vendor: robonix
   description: AgileX Piper 6-DoF arm primitive — declares joint_states / arm_status / end_pose / pos_cmd.
   license: Apache-2.0
+  tags: [primitive, arm, agilex, piper, ros2]
+  maintainers: ["lhw2002426 <lhw2002426@users.noreply.github.com>"]
 
 build: bash scripts/build.sh
 start: bash scripts/start.sh
