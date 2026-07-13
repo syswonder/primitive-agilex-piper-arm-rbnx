@@ -25,7 +25,6 @@ for iface in $(ip -br link show type can | awk '{print $1}'); do
         echo "Error: Unable to get bus-info for interface $iface."
         continue
     fi
-
     found=1
     echo "Interface $iface is connected to USB port $bus_info"
 done
