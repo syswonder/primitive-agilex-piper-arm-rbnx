@@ -77,6 +77,7 @@ _pkg_root: Path = Path(__file__).resolve().parent.parent
 # on_deactivate / on_shutdown. Module-level so the kill helper is
 # reachable from every lifecycle callback.
 _piper_proc: Optional[subprocess.Popen] = None
+_piper_pgid: Optional[int] = None
 _resolved_cfg: Optional[dict[str, Any]] = None
 
 
@@ -123,13 +124,19 @@ def _can_activate(cfg: dict) -> Optional[str]:
     except FileNotFoundError as e:
         return f"can_activate.sh: spawn failed: {e}"
     except subprocess.TimeoutExpired:
-        return "can_activate.sh: timed out after 15s (sudo prompt blocked?)"
+        return (
+            "can_activate.sh: timed out after 15s (sudo prompt blocked?). "
+            "For manual diagnosis run "
+            "`bash scripts/find_all_can_port.sh` in piper_ctl_rbnx."
+        )
     if out.returncode != 0:
         # The script's own stderr is the most useful diagnostic.
         tail = (out.stderr or out.stdout or "").strip().splitlines()[-5:]
         return (
             f"can_activate.sh: exit {out.returncode}; tail: "
             + " | ".join(tail)
+            + "; run `bash scripts/find_all_can_port.sh` to inspect "
+            "the current CAN interface/USB-port mapping."
         )
     return None
 
@@ -142,7 +149,7 @@ def _spawn_piper(cfg: dict) -> None:
     the actual driver node which itself spawns CAN-side helper
     threads. A flat SIGTERM only kills the parent.
     """
-    global _piper_proc
+    global _piper_proc, _piper_pgid
     args = [
         "ros2", "launch", "piper", "start_single_piper.launch.py",
         f"can_port:={cfg.get('can_port', 'can_piper')}",
@@ -159,30 +166,54 @@ def _spawn_piper(cfg: dict) -> None:
     _piper_proc = subprocess.Popen(
         args, stdout=log_fh, stderr=log_fh, start_new_session=True,
     )
+    _piper_pgid = os.getpgid(_piper_proc.pid)
 
 
 def _kill_piper() -> None:
     """Tear down the launched ros2 process group. Idempotent — safe
     to call from on_deactivate followed by on_shutdown without raising
     on the second call."""
-    global _piper_proc
+    global _piper_proc, _piper_pgid
     p = _piper_proc
-    if p is None or p.poll() is not None:
+    pgid = _piper_pgid
+    if pgid is None and p is not None:
+        try:
+            pgid = os.getpgid(p.pid)
+        except ProcessLookupError:
+            pgid = None
+    if pgid is None:
         _piper_proc = None
+        _piper_pgid = None
         return
+
     try:
-        os.killpg(os.getpgid(p.pid), signal.SIGTERM)
+        os.killpg(pgid, signal.SIGTERM)
     except ProcessLookupError:
         _piper_proc = None
+        _piper_pgid = None
         return
-    try:
-        p.wait(timeout=5.0)
-    except subprocess.TimeoutExpired:
+
+    deadline = time.monotonic() + 5.0
+    while time.monotonic() < deadline:
         try:
-            os.killpg(os.getpgid(p.pid), signal.SIGKILL)
+            os.killpg(pgid, 0)
         except ProcessLookupError:
+            _piper_proc = None
+            _piper_pgid = None
+            return
+        time.sleep(0.1)
+
+    try:
+        os.killpg(pgid, signal.SIGKILL)
+    except ProcessLookupError:
+        pass
+    if p is not None:
+        try:
+            p.wait(timeout=1.0)
+        except subprocess.TimeoutExpired:
             pass
     _piper_proc = None
+    _piper_pgid = None
 
 
 def _wait_for_joint_states(topic: str, timeout_s: float) -> bool:

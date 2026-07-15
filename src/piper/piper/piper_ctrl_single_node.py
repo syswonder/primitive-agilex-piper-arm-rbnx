@@ -10,7 +10,7 @@ import threading
 import argparse
 import math
 from piper_sdk import *
-from piper_sdk import C_PiperInterface
+from piper_sdk import C_PiperInterface_V2
 from piper_msgs.msg import PiperStatusMsg, PosCmd
 from piper_msgs.srv import Enable
 from geometry_msgs.msg import Pose
@@ -20,6 +20,15 @@ from numpy import clip
 
 class PiperRosNode(Node):
     """ROS2 node for the robotic arm"""
+
+    JOINT_CTRL_LIMITS = {
+        'joint1': (-150 * 1000, 150 * 1000),
+        'joint2': (0, 180 * 1000),
+        'joint3': (-170 * 1000, 0),
+        'joint4': (-100 * 1000, 100 * 1000),
+        'joint5': (-70 * 1000, 70 * 1000),
+        'joint6': (-120 * 1000, 120 * 1000),
+    }
 
     def __init__(self) -> None:
         super().__init__('piper_ctrl_single_node')
@@ -60,8 +69,9 @@ class PiperRosNode(Node):
         self.joint_ctrl.effort = [0.0] * 7
         # Enable flag
         self.__enable_flag = False
+        self._last_joint_clip_log_time = 0.0
         # Create piper class and open CAN interface
-        self.piper = C_PiperInterface(can_name=self.can_port)
+        self.piper = C_PiperInterface_V2(can_name=self.can_port)
         self.piper.ConnectPort()
 
         # Start subscription thread
@@ -75,10 +85,30 @@ class PiperRosNode(Node):
     def GetEnableFlag(self):
         return self.__enable_flag
 
+    def _clip_joint_positions_for_sdk(self, joint_positions):
+        clipped_positions = {}
+        clipped_items = []
+        for joint_name, (lower, upper) in self.JOINT_CTRL_LIMITS.items():
+            value = int(joint_positions.get(joint_name, 0))
+            clipped = max(lower, min(value, upper))
+            clipped_positions[joint_name] = clipped
+            if clipped != value:
+                clipped_items.append(f"{joint_name}:{value}->{clipped}")
+
+        if clipped_items:
+            now = time.time()
+            if now - self._last_joint_clip_log_time > 1.0:
+                self.get_logger().warning(
+                    "Clipped joint command to Piper SDK limits: "
+                    + ", ".join(clipped_items)
+                )
+                self._last_joint_clip_log_time = now
+        return clipped_positions
+
     def publish_thread(self):
         """Publish messages from the robotic arm
         """
-        rate = self.create_rate(200)  # 200 Hz
+        rate = self.create_rate(10)  # 10 Hz
         enable_flag = False
         # Set timeout (seconds)
         timeout = 5
@@ -190,16 +220,14 @@ class PiperRosNode(Node):
     def PublishArmEndPose(self):
         # End effector pose
         endpos = Pose()
-        endpos.position.x = self.piper.GetArmEndPoseMsgs().end_pose.X_axis / 1000000
-        endpos.position.y = self.piper.GetArmEndPoseMsgs().end_pose.Y_axis / 1000000
-        endpos.position.z = self.piper.GetArmEndPoseMsgs().end_pose.Z_axis / 1000000
-        roll = self.piper.GetArmEndPoseMsgs().end_pose.RX_axis / 1000
-        pitch = self.piper.GetArmEndPoseMsgs().end_pose.RY_axis / 1000
-        yaw = self.piper.GetArmEndPoseMsgs().end_pose.RZ_axis / 1000
-        roll = math.radians(roll)
-        pitch = math.radians(pitch)
-        yaw = math.radians(yaw)
-        quaternion = R.from_euler('xyz', [roll, pitch, yaw]).as_quat()
+        end_pose = self.piper.GetArmEndPoseMsgs().end_pose
+        endpos.position.x = end_pose.X_axis / 1000000
+        endpos.position.y = end_pose.Y_axis / 1000000
+        endpos.position.z = end_pose.Z_axis / 1000000
+        roll = end_pose.RX_axis / 1000
+        pitch = end_pose.RY_axis / 1000
+        yaw = end_pose.RZ_axis / 1000
+        quaternion = R.from_euler('xyz', [roll, pitch, yaw], degrees=True).as_quat()
         endpos.orientation.x = quaternion[0]
         endpos.orientation.y = quaternion[1]
         endpos.orientation.z = quaternion[2]
@@ -246,8 +274,6 @@ class PiperRosNode(Node):
         Args:
             joint_data (): The joint data
         """
-        self.get_logger().info(f"Received Joint States:")
-        self.get_logger().info(f"joint_data: {joint_data}")
         factor = 57324.840764  # 1000*180/3.14
         # self.get_logger().info(f"Received Joint States:")
 
@@ -276,7 +302,6 @@ class PiperRosNode(Node):
                 lens = len(joint_data.velocity)
                 if lens == 7:
                     vel_all = clip(round(joint_data.velocity[6]), 1, 100)
-                    self.get_logger().info(f"vel_all: {vel_all}")
                     self.piper.MotionCtrl_2(0x01, 0x01, vel_all)
                 else:
                     self.piper.MotionCtrl_2(0x01, 0x01, 30)
@@ -284,7 +309,7 @@ class PiperRosNode(Node):
                 self.piper.MotionCtrl_2(0x01, 0x01, 30)
 
             # 使用关节名称来动态控制关节
-            print("lhw debug joint_positions:", joint_positions)
+            joint_positions = self._clip_joint_positions_for_sdk(joint_positions)
             self.piper.JointCtrl(
                 joint_positions.get('joint1', 0),
                 joint_positions.get('joint2', 0),
