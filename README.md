@@ -25,8 +25,8 @@ All five contracts are **package-locally defined** (see `capabilities/primitive/
 Boot this **before** any consumer of `primitive/arm/*`. In the vertical-grasp pipeline:
 
 - `primitive-agilex-piper-description-rbnx` consumes `arm/joint_states` to drive `robot_state_publisher`;
-- `service-piper-moveit-rbnx` consumes `arm/arm_status` and publishes to `arm/pos_cmd`;
-- `skill-pick-rbnx` polls `arm/arm_status` between grasps.
+- `service-roboarm-ik-rbnx` executes arm/gripper commands and consumes Piper feedback;
+- `skill-pick-vertical-grasp-rbnx` monitors `/arm/joint_states_single` to verify that the gripper is holding an object.
 
 rbnx-cli has no defer/retry, so providers MUST come first in YAML declaration order.
 
@@ -34,13 +34,13 @@ rbnx-cli has no defer/retry, so providers MUST come first in YAML declaration or
 
 `start.sh` brings up the atlas bridge — no ROS spawn. The bridge opens a gRPC server, registers the provider, declares only `primitive/arm/driver` (auto-emitted by the framework when codegen produces a `Driver` Servicer), then blocks on `Driver(CMD_INIT, config_json)`.
 
-When `rbnx boot` invokes Init it passes the manifest's `config:` block as JSON. The handler:
+When `rbnx boot` invokes Init it passes the manifest's `config:` block as JSON. The lifecycle then runs:
 
-1. validates cfg (CAN port, bitrate, gripper flags, sentinel timeout);
-2. optionally runs `scripts/can_activate.sh` (when `auto_can_setup=true`);
-3. spawns `ros2 launch piper start_single_piper.launch.py …`;
-4. waits for the first `sensor_msgs/JointState` on `/<ns>/joint_states_single` as proof the CAN link came up;
-5. declares `arm/joint_states`, `arm/arm_status`, `arm/end_pose`, `arm/pos_cmd` on atlas, and returns ok.
+1. `CMD_INIT`: validate cfg (CAN port, bitrate, gripper flags, sentinel timeout);
+2. `CMD_ACTIVATE`: optionally run `scripts/can_activate.sh` when `auto_can_setup=true`;
+3. spawn `ros2 launch piper start_single_piper.launch.py …`;
+4. wait for the first `sensor_msgs/JointState` on `/<ns>/joint_states_single` as proof the CAN link came up;
+5. declare `arm/joint_states`, `arm/arm_status`, `arm/end_pose`, and `arm/pos_cmd` on atlas.
 
 `CMD_DEACTIVATE` / `CMD_SHUTDOWN` kill the piper subprocess. Idempotent.
 
@@ -77,7 +77,7 @@ bash scripts/can_activate.sh can_piper 1000000 "1-4.2:1.0"
 
 ### Path B — convenience for dev laptops
 
-Set `auto_can_setup: true` in the manifest config block. `on_activate` will run `scripts/can_activate.sh` itself before spawning the driver. Requires **passwordless sudo** for the operator (otherwise the script blocks on the prompt and `Driver(CMD_INIT)` times out).
+Set `auto_can_setup: true` in the manifest config block. `on_activate` will run `scripts/can_activate.sh` itself before spawning the driver. Requires **passwordless sudo** for the operator (otherwise the script blocks on the prompt and `CMD_ACTIVATE` times out).
 
 ```yaml
 - name: piper_ctl
@@ -147,7 +147,7 @@ ROBONIX_ATLAS=127.0.0.1:50051 \
     bash scripts/start.sh                              # registers, awaits Init
 ```
 
-To drive Init manually (without `rbnx boot`): from any robonix gRPC client, call the arm's `Driver` service with `command=0` (CMD_INIT) and a JSON config blob. The handler returns `ok=true` after the first JointState is observed, then declares the four data topics.
+To drive the lifecycle manually (without `rbnx boot`), call the arm's `Driver` service with `CMD_INIT` and a JSON config blob, then call `CMD_ACTIVATE`. Init only validates configuration; Activate returns after the first JointState is observed and the four data topics are declared.
 
 ## Verification
 
