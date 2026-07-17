@@ -14,24 +14,29 @@
 #   CMD_ACTIVATE -> on_activate: optionally bring up the CAN interface
 #                   (auto_can_setup), spawn start_single_piper.launch.py,
 #                   wait for first /<ns>/joint_states_single message,
-#                   atlas-declare arm/joint_states + arm/arm_status +
-#                   arm/end_pose + arm/pos_cmd.
+#                   atlas-declare arm/joint_states + arm/joint_command +
+#                   arm/end_pose + arm/pos_command + arm/arm_status.
 #   CMD_DEACTIVATE / CMD_SHUTDOWN -> kill piper subprocess. Idempotent.
 #
 # Capability surface (mode = abstract pattern, transport = wire):
 #   primitive/arm/driver         mode=rpc        transport=gRPC  (auto-declared by framework)
 #   primitive/arm/joint_states   mode=topic_out  transport=ROS2  sensor_msgs/JointState
-#   primitive/arm/arm_status     mode=topic_out  transport=ROS2  piper_msgs/PiperStatusMsg
-#   primitive/arm/end_pose       mode=topic_out  transport=ROS2  geometry_msgs/Pose
-#   primitive/arm/pos_cmd        mode=topic_in   transport=ROS2  piper_msgs/PosCmd
+#   primitive/arm/joint_command  mode=topic_in   transport=ROS2  sensor_msgs/JointState
 #                                                                (driver subscribes; consumers publish)
+#   primitive/arm/end_pose       mode=topic_out  transport=ROS2  geometry_msgs/Pose
+#   primitive/arm/pos_command    mode=topic_in   transport=ROS2  geometry_msgs/Pose
+#                                                                (driver subscribes; consumers publish)
+#   primitive/arm/arm_status     mode=topic_out  transport=ROS2  piper_msgs/PiperStatusMsg
+#                                                                (Piper-specific, vendor extension)
 #
-# All 5 data contracts are defined LOCALLY at
-# `capabilities/primitive/arm/*.v1.toml` because the robonix global
-# tree doesn't ship `primitive/arm/*` yet (Future: when more arms
-# arrive — kinova / franka — promote to global).
-# `piper_msgs/{PiperStatusMsg,PosCmd}.msg` IDL is shipped at
-# `capabilities/lib/piper_msgs/msg/` (codegen scans there too).
+# Contract sourcing:
+#   - The FOUR standard contracts (driver / joint_states / joint_command /
+#     end_pose / pos_command) are aligned with robonix's global
+#     capabilities/primitive/arm/*.v1.toml and are kept byte-compatible
+#     with them so a future consolidation is a no-op.
+#   - `arm_status` is a Piper-specific vendor extension and remains
+#     package-local. Its IDL piper_msgs/PiperStatusMsg.msg is shipped
+#     under capabilities/lib/piper_msgs/msg/.
 #
 # CAN setup — TWO paths (see scripts/can_activate.sh + README):
 #   default: assume can_port already exists on the host. Same approach
@@ -45,26 +50,27 @@
 #            useful for dev laptops where the USB path shifts.
 #
 # Config (passed via `Driver(CMD_INIT, config_json)`):
-#   can_port            default "can_piper"   — CAN interface name
-#   can_bitrate         default 1000000
-#   can_usb_address     default ""            — pin to specific USB-CAN when multiple
-#   auto_can_setup      default false         — run scripts/can_activate.sh in on_activate (sudo)
-#   auto_enable         default true          — pass to start_single_piper auto_enable arg
-#   gripper_exist       default true
-#   gripper_val_mutiple default 2             — yes, "mutiple" matches the upstream typo
-#   arm_namespace       default "/arm"        — ROS namespace of the spawned node
-#   joint_states_topic  default "/<arm_namespace>/joint_states_single"
-#   arm_status_topic    default "/<arm_namespace>/arm_status"
-#   end_pose_topic      default "/<arm_namespace>/end_pose"
-#   pos_cmd_topic       default "/<arm_namespace>/pos_cmd"
-#   sentinel_timeout_s  default 30.0
+#   can_port             default "can_piper"   — CAN interface name
+#   can_bitrate          default 1000000
+#   can_usb_address      default ""            — pin to specific USB-CAN when multiple
+#   auto_can_setup       default false         — run scripts/can_activate.sh in on_activate (sudo)
+#   auto_enable          default true          — pass to start_single_piper auto_enable arg
+#   gripper_exist        default true
+#   gripper_val_mutiple  default 2             — yes, "mutiple" matches the upstream typo
+#   arm_namespace        default "/arm"        — ROS namespace of the spawned node
+#   joint_states_topic   default "/<arm_namespace>/joint_states_single"
+#   joint_command_topic  default "/<arm_namespace>/joint_command"
+#   arm_status_topic     default "/<arm_namespace>/arm_status"
+#   end_pose_topic       default "/<arm_namespace>/end_pose"
+#   pos_command_topic    default "/<arm_namespace>/pos_command"
+#   sentinel_timeout_s   default 30.0
 manifestVersion: 1
 
 package:
   name: robonix.primitive.agilex.piper.arm
   version: 0.1.0
   vendor: robonix
-  description: AgileX Piper 6-DoF arm primitive — declares joint_states / arm_status / end_pose / pos_cmd.
+  description: AgileX Piper 6-DoF arm primitive — declares joint_states / joint_command / end_pose / pos_command / arm_status.
   license: Apache-2.0
   tags: [primitive, arm, agilex, piper, ros2]
   maintainers: ["lhw2002426 <lhw2002426@users.noreply.github.com>"]
@@ -75,6 +81,7 @@ start: bash scripts/start.sh
 capabilities:
   - name: robonix/primitive/arm/driver
   - name: robonix/primitive/arm/joint_states
-  - name: robonix/primitive/arm/arm_status
+  - name: robonix/primitive/arm/joint_command
   - name: robonix/primitive/arm/end_pose
-  - name: robonix/primitive/arm/pos_cmd
+  - name: robonix/primitive/arm/pos_command
+  - name: robonix/primitive/arm/arm_status

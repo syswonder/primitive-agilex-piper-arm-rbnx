@@ -13,10 +13,11 @@ Lifecycle (per Robonix developer guide §5):
                     `ros2 launch piper start_single_piper.launch.py …`,
                     wait for the first JointState on
                     /<ns>/joint_states_single as proof the CAN link
-                    is up, declare 4 ROS 2 topics on atlas
-                    (joint_states / arm_status / end_pose /
-                    pos_cmd) — `arm/driver` is auto-declared by the
-                    framework via the generated lifecycle Servicer.
+                    is up, declare 5 ROS 2 topics on atlas
+                    (joint_states / joint_command / end_pose /
+                    pos_command / arm_status) — `arm/driver` is
+                    auto-declared by the framework via the generated
+                    lifecycle Servicer.
     on_deactivate — symmetric: kill piper subprocess.
     on_shutdown   — last-chance kill (idempotent w/ on_deactivate).
 
@@ -30,11 +31,12 @@ Driver(CMD_INIT, config_json)):
     gripper_exist       default true
     gripper_val_mutiple default 2              (upstream typo preserved)
     arm_namespace       default "/arm"         — see note below
-    joint_states_topic  default "/<ns>/joint_states_single"
-    arm_status_topic    default "/<ns>/arm_status"
-    end_pose_topic      default "/<ns>/end_pose"
-    pos_cmd_topic       default "/<ns>/pos_cmd"
-    sentinel_timeout_s  default 30.0
+    joint_states_topic   default "/<ns>/joint_states_single"
+    joint_command_topic  default "/<ns>/joint_command"
+    arm_status_topic     default "/<ns>/arm_status"
+    end_pose_topic       default "/<ns>/end_pose"
+    pos_command_topic    default "/<ns>/pos_command"
+    sentinel_timeout_s   default 30.0
 
 NOTE on `arm_namespace`: the upstream `start_single_piper.launch.py`
 hard-codes `namespace='/arm'` (no launch_arg). We expose
@@ -321,9 +323,12 @@ def activate():
     joint_states_topic = str(cfg.get(
         "joint_states_topic", f"{ns}/joint_states_single",
     ))
+    joint_command_topic = str(cfg.get(
+        "joint_command_topic", f"{ns}/joint_command",
+    ))
     arm_status_topic = str(cfg.get("arm_status_topic", f"{ns}/arm_status"))
     end_pose_topic = str(cfg.get("end_pose_topic", f"{ns}/end_pose"))
-    pos_cmd_topic = str(cfg.get("pos_cmd_topic", f"{ns}/pos_cmd"))
+    pos_command_topic = str(cfg.get("pos_command_topic", f"{ns}/pos_command"))
     sentinel_timeout = float(cfg.get("sentinel_timeout_s", 30.0))
 
     # Optional CAN bring-up. Off by default (sudo coupling); operators
@@ -354,19 +359,21 @@ def activate():
             qos="reliable",
             description=(
                 f"Piper arm joint feedback (sensor_msgs/JointState, "
-                f"6 joints + 2 gripper finger joints). Use this for "
-                f"FK / robot_state_publisher / MoveIt state monitor."
+                f"6 joints + gripper). Use this for FK / "
+                f"robot_state_publisher / MoveIt state monitor."
             ),
         )
+        # joint_command is topic_in (driver subscribes; consumers publish).
         piper_ctl.declare_ros2_topic(
-            "robonix/primitive/arm/arm_status",
-            topic=arm_status_topic,
+            "robonix/primitive/arm/joint_command",
+            topic=joint_command_topic,
             qos="reliable",
             description=(
-                f"Piper arm status word (piper_msgs/PiperStatusMsg). "
-                f"`arm_status==0` means idle/ready; >0 means busy or "
-                f"faulted (see ctrl_mode / err_code fields). pick.py "
-                f"polls this between consecutive grasp commands."
+                f"Named joint target (sensor_msgs/JointState). PUBLISH "
+                f"here to drive the arm in joint space. A `gripper` "
+                f"entry in the JointState commands the finger opening; "
+                f"joint velocities beyond a small deadband switch the "
+                f"driver into MIT-style ctrl."
             ),
         )
         piper_ctl.declare_ros2_topic(
@@ -378,19 +385,31 @@ def activate():
                 f"the upstream driver. Frame: arm/base_link."
             ),
         )
-        # pos_cmd is topic_in (driver subscribes; consumers publish).
-        # declare_ros2_topic doesn't distinguish the direction — the
-        # toml `[mode] type = topic_in` carries that — so the call
-        # site is identical, just the contract semantics differ.
+        # pos_command is topic_in (driver subscribes; consumers publish).
         piper_ctl.declare_ros2_topic(
-            "robonix/primitive/arm/pos_cmd",
-            topic=pos_cmd_topic,
+            "robonix/primitive/arm/pos_command",
+            topic=pos_command_topic,
             qos="reliable",
             description=(
-                f"Cartesian end-effector command sink "
-                f"(piper_msgs/PosCmd). PUBLISH here to drive the arm: "
-                f"x/y/z + roll/pitch/yaw + gripper width + mode flags. "
-                f"Stage 5 piper_moveit_rbnx is the canonical publisher."
+                f"Cartesian end-effector target (geometry_msgs/Pose) "
+                f"in arm/base_link. PUBLISH here to drive the arm "
+                f"through the driver's internal Cartesian controller. "
+                f"Gripper is NOT part of this contract; command it "
+                f"through joint_command."
+            ),
+        )
+        # arm_status is vendor-specific (piper_msgs/PiperStatusMsg) and
+        # is NOT part of the robonix global primitive/arm/* set. Kept
+        # because pick_skill_rbnx / piper_moveit_rbnx rely on it.
+        piper_ctl.declare_ros2_topic(
+            "robonix/primitive/arm/arm_status",
+            topic=arm_status_topic,
+            qos="reliable",
+            description=(
+                f"Piper arm status word (piper_msgs/PiperStatusMsg). "
+                f"`arm_status==0` means idle/ready; >0 means busy or "
+                f"faulted (see ctrl_mode / err_code fields). pick.py "
+                f"polls this between consecutive grasp commands."
             ),
         )
     except Exception as e:  # noqa: BLE001
@@ -398,8 +417,10 @@ def activate():
         return Err(f"declare_ros2_topic failed: {e}")
 
     log.info(
-        "CMD_ACTIVATE ok: joint_states=%s arm_status=%s end_pose=%s pos_cmd=%s",
-        joint_states_topic, arm_status_topic, end_pose_topic, pos_cmd_topic,
+        "CMD_ACTIVATE ok: joint_states=%s joint_command=%s end_pose=%s "
+        "pos_command=%s arm_status=%s",
+        joint_states_topic, joint_command_topic, end_pose_topic,
+        pos_command_topic, arm_status_topic,
     )
     return Ok()
 
