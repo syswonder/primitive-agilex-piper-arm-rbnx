@@ -12,21 +12,32 @@ Catalog name: `robonix.primitive.agilex.piper.arm`.
 | --------------------------------------- | ---------- | --------- | ---------------------------------------------------- |
 | `robonix/primitive/arm/driver`          | rpc        | gRPC      | `Driver(CMD_INIT, config_json)` — lifecycle gate     |
 | `robonix/primitive/arm/joint_states`    | topic_out  | ROS 2     | `/<ns>/joint_states_single` (sensor_msgs/JointState) |
-| `robonix/primitive/arm/arm_status`      | topic_out  | ROS 2     | `/<ns>/arm_status` (piper_msgs/PiperStatusMsg)       |
+| `robonix/primitive/arm/joint_command`   | topic_in   | ROS 2     | `/<ns>/joint_command` (sensor_msgs/JointState) — driver subscribes; consumers publish |
 | `robonix/primitive/arm/end_pose`        | topic_out  | ROS 2     | `/<ns>/end_pose` (geometry_msgs/Pose)                |
-| `robonix/primitive/arm/pos_cmd`         | topic_in   | ROS 2     | `/<ns>/pos_cmd` (piper_msgs/PosCmd) — driver subscribes; consumers publish |
+| `robonix/primitive/arm/pos_command`     | topic_in   | ROS 2     | `/<ns>/pos_command` (geometry_msgs/Pose) — driver subscribes; consumers publish |
+| `robonix/primitive/arm/arm_status`      | topic_out  | ROS 2     | `/<ns>/arm_status` (piper_msgs/PiperStatusMsg) — vendor extension |
 
-All five contracts are **package-locally defined** (see `capabilities/primitive/arm/*.v1.toml`) because the robonix global tree does not ship `primitive/arm/*` yet (it has chassis / camera / lidar / imu / audio). The two vendor-specific message types (`PiperStatusMsg`, `PosCmd`) are also shipped at package level, at `capabilities/lib/piper_msgs/msg/*.msg`.
+The FOUR **standard** contracts (driver / joint_states / joint_command / end_pose / pos_command) mirror robonix's global `capabilities/primitive/arm/*.v1.toml`: same id, version, IDL, and mode. Keep them byte-compatible with the global tree so a future consolidation is a no-op.
 
-> **Single-source-of-truth** for the two `.msg` IDLs is the vendored `src/piper_msgs/msg/` directory. The mirrored copies under `capabilities/lib/piper_msgs/msg/` are what `rbnx codegen` / atlas's contract registry actually scan. Keep them in sync — if upstream `piper_msgs` ever changes, update both. Plain file copies are used rather than symlinks to keep `git diff` legible.
+`arm_status` is a Piper-specific **vendor extension** and remains package-local. Its IDL `piper_msgs/PiperStatusMsg.msg` is shipped at package level under `capabilities/lib/piper_msgs/msg/PiperStatusMsg.msg`.
+
+> **Single-source-of-truth** for the `PiperStatusMsg` IDL is the vendored `src/piper_msgs/msg/` directory. The mirrored copy under `capabilities/lib/piper_msgs/msg/` is what `rbnx codegen` / atlas's contract registry actually scan. Keep the two in sync — plain file copies are used rather than symlinks to keep `git diff` legible.
+
+### Joint-space vs Cartesian control paths
+
+Two independent command channels; each one bypasses the other:
+
+- **Joint-space (default in the vertical-grasp deploy)**: consumers publish `sensor_msgs/JointState` on `arm/joint_command`. `roboarm_ik` already solves IK, so the driver just forwards the target angles to the Piper SDK's `JointCtrl` + `GripperCtrl`. The `gripper` entry in the JointState carries finger opening.
+- **Cartesian**: consumers publish `geometry_msgs/Pose` on `arm/pos_command`. The driver converts the quaternion to xyz-euler and forwards to the Piper SDK's `EndPoseCtrl` (SDK-side / firmware IK). **Gripper is NOT part of this contract** — command it separately through `joint_command`.
 
 ## Boot ordering
 
 Boot this **before** any consumer of `primitive/arm/*`. In the vertical-grasp pipeline:
 
 - `primitive-agilex-piper-description-rbnx` consumes `arm/joint_states` to drive `robot_state_publisher`;
-- `service-roboarm-ik-rbnx` executes arm/gripper commands and consumes Piper feedback;
-- `skill-pick-vertical-grasp-rbnx` monitors `/arm/joint_states_single` to verify that the gripper is holding an object.
+- `service-roboarm-ik-rbnx` consumes `arm/joint_states` and publishes to `arm/joint_command` (default path);
+- `service-piper-moveit-rbnx` consumes `arm/arm_status` and publishes to `arm/pos_command` (Cartesian path);
+- `skill-pick-vertical-grasp-rbnx` polls `arm/arm_status` between grasps and monitors `/arm/joint_states_single` to verify that the gripper is holding an object.
 
 rbnx-cli has no defer/retry, so providers MUST come first in YAML declaration order.
 
@@ -40,7 +51,7 @@ When `rbnx boot` invokes Init it passes the manifest's `config:` block as JSON. 
 2. `CMD_ACTIVATE`: optionally run `scripts/can_activate.sh` when `auto_can_setup=true`;
 3. spawn `ros2 launch piper start_single_piper.launch.py …`;
 4. wait for the first `sensor_msgs/JointState` on `/<ns>/joint_states_single` as proof the CAN link came up;
-5. declare `arm/joint_states`, `arm/arm_status`, `arm/end_pose`, and `arm/pos_cmd` on atlas.
+5. declare `arm/joint_states`, `arm/joint_command`, `arm/end_pose`, `arm/pos_command`, and `arm/arm_status` on atlas, then return ok.
 
 `CMD_DEACTIVATE` / `CMD_SHUTDOWN` kill the piper subprocess. Idempotent.
 
@@ -100,12 +111,12 @@ primitive-agilex-piper-arm-rbnx/
 │   ├── primitive/arm/
 │   │   ├── driver.v1.toml
 │   │   ├── joint_states.v1.toml
-│   │   ├── arm_status.v1.toml
+│   │   ├── joint_command.v1.toml
 │   │   ├── end_pose.v1.toml
-│   │   └── pos_cmd.v1.toml
+│   │   ├── pos_command.v1.toml
+│   │   └── arm_status.v1.toml               # Piper vendor extension
 │   └── lib/piper_msgs/msg/                  # IDL for codegen
-│       ├── PiperStatusMsg.msg               # mirror of src/piper_msgs/msg/
-│       └── PosCmd.msg
+│       └── PiperStatusMsg.msg               # mirror of src/piper_msgs/msg/
 ├── piper_ctl/
 │   ├── __init__.py
 │   └── main.py                              # lifecycle + sentinel
@@ -116,7 +127,7 @@ primitive-agilex-piper-arm-rbnx/
 │   └── can_activate.sh                      # vendored from upstream piper_ros
 └── src/                                     # vendored (no .git, no build/install)
     ├── piper/                               # main ROS 2 driver (rclpy)
-    ├── piper_msgs/                          # PiperStatusMsg + PosCmd + Enable.srv
+    ├── piper_msgs/                          # PiperStatusMsg + Enable.srv (PosCmd kept only for the legacy graspnet_to_poscmd_node)
     └── graspnet_msgs/                       # GraspPose.msg — required by piper/package.xml
 ```
 
@@ -133,10 +144,11 @@ gripper_val_mutiple: 2                # upstream typo preserved
 arm_namespace:       /arm             # see note in main.py docstring
 sentinel_timeout_s:  30.0             # max wait for first JointState in on_activate
 # Topic-name overrides (rarely needed; default derives from arm_namespace):
-# joint_states_topic: /arm/joint_states_single
-# arm_status_topic:   /arm/arm_status
-# end_pose_topic:     /arm/end_pose
-# pos_cmd_topic:      /arm/pos_cmd
+# joint_states_topic:   /arm/joint_states_single
+# joint_command_topic:  /arm/joint_command
+# arm_status_topic:     /arm/arm_status
+# end_pose_topic:       /arm/end_pose
+# pos_command_topic:    /arm/pos_command
 ```
 
 ## Build / run standalone
@@ -147,23 +159,30 @@ ROBONIX_ATLAS=127.0.0.1:50051 \
     bash scripts/start.sh                              # registers, awaits Init
 ```
 
-To drive the lifecycle manually (without `rbnx boot`), call the arm's `Driver` service with `CMD_INIT` and a JSON config blob, then call `CMD_ACTIVATE`. Init only validates configuration; Activate returns after the first JointState is observed and the four data topics are declared.
+To drive the lifecycle manually (without `rbnx boot`), call the arm's `Driver` service with `CMD_INIT` and a JSON config blob, then call `CMD_ACTIVATE`. Init only validates configuration; Activate returns after the first JointState is observed and the five data topics are declared.
 
 ## Verification
 
 ```bash
 rbnx caps | grep arm
 # Expected: piper_ctl provider with
-#   robonix/primitive/arm/{driver, joint_states, arm_status, end_pose, pos_cmd}
+#   robonix/primitive/arm/{driver, joint_states, joint_command,
+#                          end_pose, pos_command, arm_status}
 
 ros2 topic hz /arm/joint_states_single             # ~200 Hz
 ros2 topic echo /arm/arm_status --once             # PiperStatusMsg fields
 ros2 topic echo /arm/end_pose --once               # geometry_msgs/Pose
 
-# Reverse cmd path (CAREFUL — moves the arm; clear the workspace first):
-ros2 topic pub --once /arm/pos_cmd piper_msgs/msg/PosCmd \
-    "{x: 0.30, y: 0.0, z: 0.25, roll: 0.0, pitch: 1.57, yaw: 0.0,
-      gripper: 0.05, mode1: 0, mode2: 0}"
+# Cartesian cmd path (CAREFUL — moves the arm; clear the workspace first):
+ros2 topic pub --once /arm/pos_command geometry_msgs/msg/Pose \
+    "{position: {x: 0.30, y: 0.0, z: 0.25},
+      orientation: {x: 0.0, y: 0.7071, z: 0.0, w: 0.7071}}"
+
+# Joint-space cmd path (also moves the arm — same warning):
+ros2 topic pub --once /arm/joint_command sensor_msgs/msg/JointState \
+    "{name: [joint1, joint2, joint3, joint4, joint5, joint6, gripper],
+      position: [0.0, 0.5, -0.7, 0.0, 0.6, 0.0, 0.04],
+      velocity: [], effort: []}"
 ```
 
 ## Vendor / upstream
