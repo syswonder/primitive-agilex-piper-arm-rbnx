@@ -1,23 +1,11 @@
-# Joint feedback stream from the arm — sensor_msgs/JointState at the
-# rate the upstream driver publishes (piper_ctrl_single_node fires the
-# publisher from its publish_thread; default ~200 Hz on can_piper).
-#
-# Source topic: `/<arm_namespace>/joint_states_single` (note the
-# `_single` suffix — that's the upstream driver's own choice; the
-# `joint_states` short name is reserved for the SUBSCRIBER side
-# inside piper_ctrl_single_node, which expects MoveIt-style
-# planned-pose echo. Keep both topic names disjoint to avoid a
-# self-feedback loop.)
-#
-# Consumed by:
-#   - Stage 3A piper_description_rbnx: robot_state_publisher uses this
-#     to drive `arm/base_link → arm/link6` joint TFs.
-#   - Stage 5 piper_moveit_rbnx: MoveIt's internal state monitor.
+# Standard joint feedback. Grippers that are part of the arm expose their
+# measured opening as a named joint in this same JointState stream.
 [contract]
-id      = "robonix/primitive/arm/joint_states"
+id = "robonix/primitive/arm/joint_states"
 version = "1"
-kind    = "primitive"
-idl     = "common_interfaces/sensor_msgs/msg/JointState.msg"
+kind = "primitive"
+idl = "common_interfaces/sensor_msgs/msg/JointState.msg"
+description = "Measured arm and gripper joint positions, velocities, and efforts."
 
 [mode]
 type = "topic_out"
