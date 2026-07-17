@@ -11,7 +11,7 @@ import argparse
 import math
 from piper_sdk import *
 from piper_sdk import C_PiperInterface_V2
-from piper_msgs.msg import PiperStatusMsg, PosCmd
+from piper_msgs.msg import PiperStatusMsg
 from piper_msgs.srv import Enable
 from geometry_msgs.msg import Pose
 from scipy.spatial.transform import Rotation as R  # For Euler angle to quaternion conversion
@@ -75,8 +75,13 @@ class PiperRosNode(Node):
         self.piper.ConnectPort()
 
         # Start subscription thread
-        self.create_subscription(PosCmd, 'pos_cmd', self.pos_callback, 1)
-        self.create_subscription(JointState, 'joint_states', self.joint_callback, 1)
+        # `pos_command` (geometry_msgs/Pose) — Cartesian end-effector target.
+        # Gripper is NOT part of this contract; command the gripper as a
+        # named joint on `joint_command` instead.
+        self.create_subscription(Pose, 'pos_command', self.pos_callback, 1)
+        # `joint_command` (sensor_msgs/JointState) — named joint target,
+        # optionally including a `gripper` entry.
+        self.create_subscription(JointState, 'joint_command', self.joint_callback, 1)
         self.create_subscription(Bool, 'enable_flag', self.enable_callback, 1)
 
         self.publisher_thread = threading.Thread(target=self.publish_thread)
@@ -234,39 +239,42 @@ class PiperRosNode(Node):
         endpos.orientation.w = quaternion[3]
         self.end_pose_pub.publish(endpos)
 
-    def pos_callback(self, pos_data):
-        """Callback function for subscribing to the end effector pose
+    def pos_callback(self, pose_msg):
+        """Callback for `pos_command` (geometry_msgs/Pose) — Cartesian target
+        for the end effector, expressed in arm/base_link. Orientation is a
+        quaternion; we convert to XYZ Euler angles here because the Piper
+        SDK's EndPoseCtrl takes rpy in 0.001 deg.
 
-        Args:
-            pos_data (): The position data
+        Gripper is intentionally NOT part of this contract — command the
+        gripper as a named joint on `joint_command`.
         """
         factor = 180 / 3.1415926
-        self.get_logger().info(f"Received PosCmd:")
-        self.get_logger().info(f"x: {pos_data.x}")
-        self.get_logger().info(f"y: {pos_data.y}")
-        self.get_logger().info(f"z: {pos_data.z}")
-        self.get_logger().info(f"roll: {pos_data.roll}")
-        self.get_logger().info(f"pitch: {pos_data.pitch}")
-        self.get_logger().info(f"yaw: {pos_data.yaw}")
-        self.get_logger().info(f"gripper: {pos_data.gripper}")
-        self.get_logger().info(f"mode1: {pos_data.mode1}")
-        self.get_logger().info(f"mode2: {pos_data.mode2}")
-        x = round(pos_data.x*1000) * 1000
-        y = round(pos_data.y*1000) * 1000
-        z = round(pos_data.z*1000) * 1000
-        rx = round(pos_data.roll*1000*factor)
-        ry = round(pos_data.pitch*1000*factor)
-        rz = round(pos_data.yaw*1000*factor)
-        if(self.GetEnableFlag()):
+        px = pose_msg.position.x
+        py = pose_msg.position.y
+        pz = pose_msg.position.z
+        qx = pose_msg.orientation.x
+        qy = pose_msg.orientation.y
+        qz = pose_msg.orientation.z
+        qw = pose_msg.orientation.w
+        # Guard against an uninitialised quaternion (all zeros) which would
+        # blow up scipy's Rotation.from_quat — fall back to identity.
+        if qx == 0.0 and qy == 0.0 and qz == 0.0 and qw == 0.0:
+            roll = pitch = yaw = 0.0
+        else:
+            roll, pitch, yaw = R.from_quat([qx, qy, qz, qw]).as_euler('xyz', degrees=False)
+        self.get_logger().info(
+            f"Received pos_command: x={px:.4f} y={py:.4f} z={pz:.4f} "
+            f"rpy=({roll:.4f}, {pitch:.4f}, {yaw:.4f})"
+        )
+        x = round(px * 1000) * 1000
+        y = round(py * 1000) * 1000
+        z = round(pz * 1000) * 1000
+        rx = round(roll * 1000 * factor)
+        ry = round(pitch * 1000 * factor)
+        rz = round(yaw * 1000 * factor)
+        if self.GetEnableFlag():
             self.piper.MotionCtrl_2(0x01, 0x00, 50)
             self.piper.EndPoseCtrl(x, y, z, rx, ry, rz)
-            gripper = round(pos_data.gripper * 1000 * 1000)
-            if pos_data.gripper > 80000:
-                gripper = 80000
-            if pos_data.gripper < 0:
-                gripper = 0
-            if self.gripper_exist:
-                self.piper.GripperCtrl(abs(gripper), 1000, 0x01, 0)
 
     def joint_callback(self, joint_data):
         """Callback function for joint angles

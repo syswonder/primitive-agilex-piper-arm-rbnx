@@ -1,7 +1,11 @@
 #!/usr/bin/env python3
 # -*-coding:utf8-*-
-# This node subscribes to /graspnet/grasps, transforms coordinates to base_link frame,
-# and publishes to /pos_cmd for robot arm control.
+# LEGACY. This node subscribes to /graspnet/grasps and publishes vendor-
+# specific piper_msgs/PosCmd on /pos_cmd. The current piper_ctl driver
+# no longer subscribes to /pos_cmd — it subscribes to /pos_command
+# (geometry_msgs/Pose) and /joint_command (sensor_msgs/JointState).
+# Running this node in the current pipeline has no effect on the arm.
+# Kept only for historical reference; do not add to any launch.
 
 import rclpy
 from rclpy.node import Node
